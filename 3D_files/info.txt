@@ -1,0 +1,3 @@
+Information for printing:
+Use no-fill for the crystal
+No supports used on any of the files
