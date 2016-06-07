@@ -6,7 +6,7 @@
 
 Modified for Particle Photon June 2016 by Jim Brower
 1: can turn on/off with a Particle.function()
-2: automatically turns on at Sunrise and off at programmed time
+2: automatically turns on at Sunset and off at programmed time
 3:Uses "sun_time" webhook for weatherunderground sunrise/sunset times:
 
 {
@@ -58,9 +58,9 @@ int flutLow;
 
 Adafruit_NeoPixel strip = Adafruit_NeoPixel(PIXEL_COUNT, PIXEL_PIN, PIXEL_TYPE);
 
-int powerState = 1;
-int lastTimerState = 1;
-int lastState = 1;
+int powerState = -1;
+int lastTimerState = -1;
+int lastState = -1;
 
 struct TimerTime{
   uint8_t theHour;
@@ -72,9 +72,12 @@ TimerTime offTime = {23, 59};
 
 const char* cityLocation = "Princeton";  //City for my Photon
 const char* stateLocation = "NJ";     // State for my Photon
+const int8_t sunsetOffset = -2;
+
 String responseTopic;
 char sunriseBuffer[256] = "";
 char publishString[125] = "";
+char currentTime[6] = "24:00";
 void setup()
 {
   flickerDepth = (burnDepth + flutterDepth) / 2.4;
@@ -94,6 +97,7 @@ void setup()
   Particle.subscribe(responseTopic, webhookHandler, MY_DEVICES);
   Particle.function("CrystalPower", powerFunction);
   Particle.variable("Power", powerState);
+  Particle.variable("currentTime", currentTime);
   Particle.variable("SunriseInfo", sunriseBuffer);
   strip.begin();
   strip.setPixelColor(0, 255, 0, 0);
@@ -166,12 +170,19 @@ void loop()
   lastState = powerState;
   for (static unsigned long pubTimer = millis(); ( millis() - pubTimer ) > 60 * 60000UL; pubTimer = millis()) // request sun times every hour
   {
-    Particle.publish("sun_time", publishString, 60, PRIVATE);;
+    Particle.publish("sun_time", publishString, 60, PRIVATE);
+  }
+  for (static unsigned long clockUpdate = millis(); ( millis() - clockUpdate ) > 1000UL; clockUpdate = millis()) // update the clock Particle.variable() once a second
+  {
+    uint8_t hour = Time.hour();
+    uint8_t minute = Time.minute();
+    char timeBuffer[6] = "";
+    sprintf(timeBuffer, "%02d:%02d", hour, minute);
+    strcpy(currentTime, timeBuffer);
   }
 }
 
-
-// basic fire funciton - not called in main loop
+// basic fire function - not called in main loop
 void fire(int grnLow) {
   for (int grnPx = grnHigh; grnPx > grnLow; grnPx--) {
     strip.setPixelColor(0, grnPx, redPx, bluePx);
@@ -254,8 +265,9 @@ void gotSunTime(const char * event, const char * data)
   int currentMinute = atoi(strtok(NULL, "~"));
   Time.zone(0);
   Time.zone(utcOffset(Time.hour(), currentHour));
-  sprintf(sunriseBuffer, "%s, %s Sunrise: %02d:%02d, Sunset: %02d:%02d, Last Updated: %02d:%02d", cityLocation, stateLocation, riseHour, riseMinute, sunset.theHour, sunset.theMinute, currentHour, currentMinute);
+  sprintf(sunriseBuffer, "%s, %s Sunrise: %02d:%02d, Sunset: %02d:%02d, Sunset Offset = %d, Last Updated: %02d:%02d", cityLocation, stateLocation, riseHour, riseMinute, sunset.theHour, sunset.theMinute, sunsetOffset, currentHour, currentMinute);
   //Particle.publish("pushover", sunriseBuffer, 60, PRIVATE);
+  sunset.theHour += sunsetOffset; // let's come on one hour before sunset. <<<<<<<<<<<<<<<<<<<<<<<< IMPORTANT
 }
 
 int utcOffset(int utcHour, int localHour)  // sorry Baker Island, this won't work for you (UTC-12)
@@ -323,7 +335,7 @@ bool timerEvaluate()  // comparing time here is easier with Unix timestamps...
 {
   int on_time = tmConvert_t(Time.year(), Time.month(), Time.day(), sunset.theHour, sunset.theMinute, 0);
   int off_time = tmConvert_t(Time.year(), Time.month(), Time.day(), offTime.theHour, offTime.theMinute, 0);
-  int now_time = Time.now(); //tmConvert_t(Time.year(), Time.month(), Time.day(), Time.hour(), Time.minute(), Time.second());
+  int now_time = tmConvert_t(Time.year(), Time.month(), Time.day(), Time.hour(), Time.minute(), Time.second());
   //
   if (on_time < off_time)
   {
