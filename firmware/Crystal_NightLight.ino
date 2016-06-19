@@ -27,7 +27,7 @@ Modified for Particle Photon June 2016 by Jim Brower
 */
 
 #include "neopixel.h"
-#include "application.h"
+//#include "application.h"
 
 #define PIXEL_COUNT 1
 #define PIXEL_PIN D2
@@ -63,19 +63,22 @@ int lastTimerState = -1;
 int lastState = -1;
 
 struct TimerTime{
-  uint8_t theHour;
-  uint8_t theMinute;
+  int theHour;
+  int theMinute;
 };
 
+TimerTime sunrise = { 6, 15};
 TimerTime sunset = {10, 30};
-TimerTime offTime = {23, 59};
+TimerTime onTime = {17, 30};
+TimerTime offTime = { 2, 30};
 
 const char* cityLocation = "Princeton";  //City for my Photon
 const char* stateLocation = "NJ";     // State for my Photon
-const int8_t sunsetOffset = -2;
+const char* room = "Living Room";
+const int sunsetOffset = -2;
 
 String responseTopic;
-char sunriseBuffer[256] = "";
+char sunriseBuffer[256] = "undefined";
 char publishString[125] = "";
 char currentTime[6] = "24:00";
 void setup()
@@ -87,7 +90,7 @@ void setup()
   flickDelay = (cycleTime / 2) / flickerDepth;
   flutLow = grnHigh - flutterDepth;
   flutDelay = ((cycleTime / 2) / flutterDepth);
-
+  //WiFi.setCredentials("OT325", "5E90B66FC6", WEP);
   strcpy(publishString, "{\"my-city\": \"");
   strcat(publishString, cityLocation);
   strcat(publishString, "\", \"my-state\": \"");
@@ -96,13 +99,18 @@ void setup()
   responseTopic = System.deviceID();
   Particle.subscribe(responseTopic, webhookHandler, MY_DEVICES);
   Particle.function("CrystalPower", powerFunction);
+  Particle.function("SetTimes", setTimes);
   Particle.variable("Power", powerState);
   Particle.variable("currentTime", currentTime);
   Particle.variable("SunriseInfo", sunriseBuffer);
   strip.begin();
   strip.setPixelColor(0, 255, 0, 0);
   strip.show();
-  delay(500);
+  int startBurn = millis();
+  while(millis() - startBurn < 1000UL)
+  {
+    Particle.process();
+  }
   Particle.publish("sun_time", publishString, 60, PRIVATE);
 }
 
@@ -118,7 +126,12 @@ void loop()
   if(timerState != lastTimerState)
   {
     powerState = timerState;
-    Particle.publish("pushover", powerState? "Timer set crystal ON" : "Timer set crystal off", 60, PRIVATE);
+    pushoverPowerMessage("Timer");
+    char pushoverMessage[128] = "Timer set ";
+    strcat(pushoverMessage, room);
+    strcat(pushoverMessage, " crystal ");
+    strcat(pushoverMessage, powerState? "ON" : "OFF");
+    Particle.publish("pushover", pushoverMessage, 60, PRIVATE);
   }
   lastTimerState = timerState;
   static uint32_t flickMode = 0;
@@ -168,18 +181,8 @@ void loop()
     }
   }
   lastState = powerState;
-  for (static unsigned long pubTimer = millis(); ( millis() - pubTimer ) > 60 * 60000UL; pubTimer = millis()) // request sun times every hour
-  {
-    Particle.publish("sun_time", publishString, 60, PRIVATE);
-  }
-  for (static unsigned long clockUpdate = millis(); ( millis() - clockUpdate ) > 1000UL; clockUpdate = millis()) // update the clock Particle.variable() once a second
-  {
-    uint8_t hour = Time.hour();
-    uint8_t minute = Time.minute();
-    char timeBuffer[6] = "";
-    sprintf(timeBuffer, "%02d:%02d", hour, minute);
-    strcpy(currentTime, timeBuffer);
-  }
+  [](){static uint32_t webhookTimer = 0; if(millis() - webhookTimer > 60 * 60000UL){Particle.publish("sun_time", publishString, 60, PRIVATE); webhookTimer = millis();}}();
+  [](){static uint32_t clockTimer = 0; if(millis() - clockTimer > 1000UL){char timeBuffer[6] = ""; sprintf(timeBuffer, "%02d:%02d", Time.hour(), Time.minute()); strcpy(currentTime, timeBuffer); clockTimer = millis();}}();
 }
 
 // basic fire function - not called in main loop
@@ -257,17 +260,17 @@ void gotSunTime(const char * event, const char * data)
 {
   //sunriseBuffer = "";
   strcpy(sunriseBuffer, data);
-  int riseHour = atoi(strtok(sunriseBuffer, "\"~"));
-  int riseMinute = atoi(strtok(NULL, "~"));
+  sunrise.theHour = atoi(strtok(sunriseBuffer, "\"~"));
+  sunrise.theMinute = atoi(strtok(NULL, "~"));
   sunset.theHour = atoi(strtok(NULL, "~"));
   sunset.theMinute = atoi(strtok(NULL, "~"));
   int currentHour = atoi(strtok(NULL, "~"));
   int currentMinute = atoi(strtok(NULL, "~"));
   Time.zone(0);
   Time.zone(utcOffset(Time.hour(), currentHour));
-  sprintf(sunriseBuffer, "%s, %s Sunrise: %02d:%02d, Sunset: %02d:%02d, Sunset Offset = %d, Last Updated: %02d:%02d", cityLocation, stateLocation, riseHour, riseMinute, sunset.theHour, sunset.theMinute, sunsetOffset, currentHour, currentMinute);
+  sprintf(sunriseBuffer, "%s, %s Sunrise: %02d:%02d, Sunset: %02d:%02d, Sunset Offset = %d, Off Time: %02d:%02d, Last Updated: %02d:%02d", cityLocation, stateLocation, sunrise.theHour, sunrise.theMinute, sunset.theHour, sunset.theMinute, sunsetOffset, offTime.theHour, offTime.theMinute, currentHour, currentMinute);
   //Particle.publish("pushover", sunriseBuffer, 60, PRIVATE);
-  sunset.theHour += sunsetOffset; // let's come on one hour before sunset. <<<<<<<<<<<<<<<<<<<<<<<< IMPORTANT
+  sunset.theHour += sunsetOffset; // let's come on before sunset. <<<<<<<<<<<<<<<<<<<<<<<< IMPORTANT
 }
 
 int utcOffset(int utcHour, int localHour)  // sorry Baker Island, this won't work for you (UTC-12)
@@ -306,13 +309,14 @@ int powerFunction(String command)
   if (value == 0 || value == 1)
   {
     powerState = value;
-    Particle.publish("pushover", powerState? "User set crystal ON" : "User set crystal off", 60, PRIVATE);
-    return value;
+    pushoverPowerMessage("User");
+    return powerState;
   }
   else if (value == 2)
   {
-    powerState = !powerState;
-    Particle.publish("pushover", powerState? "User set crystal ON" : "User set crystal off", 60, PRIVATE);
+    powerState = powerState? 0 : 1; //!powerState;
+    powerState = value;
+    pushoverPowerMessage("User");
     return powerState;
   }
   else return -1;
@@ -349,4 +353,44 @@ bool timerEvaluate()  // comparing time here is easier with Unix timestamps...
   {
     return false;
   }
+}
+
+int setTimes(String command)
+{
+  int gotTime = 0;
+  Serial.println(command);
+  char timeString[63] = "";
+  command.toCharArray(timeString, sizeof(timeString));
+  char* ptr;
+  ptr = strstr(timeString,"ON");
+  if(ptr)
+  {
+    ptr += 2;
+    double on = atof(ptr);
+    onTime.theHour = int(on);
+    onTime.theMinute = (on - onTime.theHour) * 60.0;
+    gotTime += 1;
+  }
+  ptr = strstr(timeString,"OFF");
+  if(ptr)
+  {
+    ptr += 3;
+    double off = atof(ptr);
+    offTime.theHour = int(off);
+    offTime.theMinute = (off - offTime.theHour) * 60.0;
+    gotTime += 10;
+  }
+  sprintf(sunriseBuffer, "%s, %s Sunrise: %02d:%02d, Sunset: %02d:%02d, Sunset Offset = %d, Off Time: %02d:%02d, Last Updated: %02d:%02d", cityLocation, stateLocation, sunrise.theHour, sunrise.theMinute, sunset.theHour, sunset.theMinute, sunsetOffset, offTime.theHour, offTime.theMinute, Time.hour(), Time.minute());
+  return gotTime;
+}
+
+void pushoverPowerMessage(const char* trigger)
+{
+  char pushoverMessage[128] = "";
+  strcpy(pushoverMessage, trigger);
+  strcat(pushoverMessage, " set ");
+  strcat(pushoverMessage, room);
+  strcat(pushoverMessage, " crystal ");
+  strcat(pushoverMessage, powerState? "ON" : "OFF");
+  Particle.publish("pushover", pushoverMessage, 60, PRIVATE);
 }
